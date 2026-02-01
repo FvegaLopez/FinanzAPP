@@ -1,28 +1,37 @@
 require('dotenv').config();
 const express = require('express');
 const { categorizeTransaction } = require('./services/groq');
-const { findUserByPhone, createUser, createTransaction, getUserAccounts } = require('./services/firebase');
+const { findUserByPhone, createTransaction, getUserAccounts } = require('./services/firebase');
 const { sendWhatsAppMessage } = require('./services/whatsapp');
 
 const app = express();
 app.use(express.json());
 
 // Cache en memoria para evitar duplicados
-// Guarda los últimos 100 message_id procesados
 const processedMessages = new Map();
 const MAX_CACHE_SIZE = 100;
+
+// Cache para rastrear primeros mensajes (evita spam de bienvenida)
+const firstMessageCache = new Map();
 
 function isDuplicate(messageId) {
   return processedMessages.has(messageId);
 }
 
 function markAsProcessed(messageId) {
-  // Si el cache está lleno, eliminar la entrada más antigua
   if (processedMessages.size >= MAX_CACHE_SIZE) {
     const firstKey = processedMessages.keys().next().value;
     processedMessages.delete(firstKey);
   }
   processedMessages.set(messageId, Date.now());
+}
+
+function isFirstMessage(phone) {
+  return !firstMessageCache.has(phone);
+}
+
+function markAsWelcomed(phone) {
+  firstMessageCache.set(phone, Date.now());
 }
 
 // Verificación del webhook
@@ -52,7 +61,7 @@ app.post('/webhook', async (req, res) => {
 
       if (messages && messages.length > 0) {
         const message = messages[0];
-        const messageId = message.id;       // ID único que envía Meta
+        const messageId = message.id;
         const from = message.from;
         const messageBody = message.text?.body;
 
@@ -65,30 +74,76 @@ app.post('/webhook', async (req, res) => {
         }
         markAsProcessed(messageId);
 
-        // Buscar usuario por teléfono
+        // 🔍 VERIFICAR SI ES PRIMER MENSAJE (para evitar spam de bienvenida)
+        const isFirst = isFirstMessage(from);
+
+        // 🔍 BUSCAR USUARIO POR TELÉFONO
         let user = await findUserByPhone(from);
 
+        // ❌ CASO 1: Usuario NO existe en absoluto
         if (!user) {
-          console.log('Usuario no encontrado, creando nuevo...');
-          user = await createUser(`+${from}`);
+          console.log('❌ Usuario no encontrado. Enviando enlace de registro...');
+          
+          if (isFirst) {
+            try {
+              await sendWhatsAppMessage(from,
+                '👋 ¡Hola! Bienvenido a *FinanzApp*\n\n' +
+                '⚠️ Para usar el bot de WhatsApp necesitas crear una cuenta primero.\n\n' +
+                '📲 Regístrate aquí:\n' +
+                'https://finanzapp-76702.web.app/register\n\n' +
+                '💡 Una vez registrado, agrega este número de WhatsApp en tu perfil y podrás registrar tus gastos e ingresos directamente desde aquí.'
+              );
+              markAsWelcomed(from);
+            } catch (err) {
+              console.log('Error enviando mensaje de registro:', err.message);
+            }
+          }
+          return res.sendStatus(200); // ⛔ NO procesar el mensaje
+        }
 
+        // ⚠️ CASO 2: Usuario existe pero NO tiene email (cuenta incompleta/fantasma)
+        if (!user.email) {
+          console.log('⚠️ Usuario sin email. Enviando enlace de registro...');
+          
+          if (isFirst) {
+            try {
+              await sendWhatsAppMessage(from,
+                '⚠️ Tu cuenta está incompleta.\n\n' +
+                'Para usar todas las funciones, completa tu registro:\n' +
+                'https://finanzapp-76702.web.app/register\n\n' +
+                '💡 Usa este número de WhatsApp al registrarte.'
+              );
+              markAsWelcomed(from);
+            } catch (err) {
+              console.log('Error enviando mensaje:', err.message);
+            }
+          }
+          return res.sendStatus(200); // ⛔ NO procesar el mensaje
+        }
+
+        // ✅ CASO 3: Usuario completo (tiene email)
+        console.log(`✅ Usuario encontrado: ${user.name} (${user.id})`);
+
+        // 🎉 Si es el primer mensaje, dar bienvenida personalizada
+        if (isFirst) {
           try {
             await sendWhatsAppMessage(from,
-              '¡Bienvenido a FinanzApp! 🎉\n\n' +
-              'Ya puedes registrar tus gastos e ingresos.\n\n' +
-              'Ejemplos:\n' +
+              `¡Hola ${user.name}! 👋\n\n` +
+              'Ya puedes registrar tus gastos e ingresos desde WhatsApp.\n\n' +
+              '📝 Ejemplos:\n' +
               '- "Gasté 5000 en supermercado"\n' +
-              '- "Recibí 50000 de freelance"\n\n' +
-              '💡 Si ya tienes cuenta en la web, agrega tu número de WhatsApp en tu perfil para sincronizar.'
+              '- "Recibí 50000 de freelance"\n' +
+              '- "Uber a casa 3500"\n\n' +
+              '¡Adelante con tu mensaje! 🚀'
             );
+            markAsWelcomed(from);
+            return res.sendStatus(200); // Solo dar bienvenida, no procesar
           } catch (err) {
             console.log('Error enviando bienvenida:', err.message);
           }
-        } else {
-          console.log(`Usuario encontrado: ${user.name} (${user.id})`);
         }
 
-        // Categorizar con Groq
+        // 🤖 PROCESAR MENSAJE COMO TRANSACCIÓN
         const analysis = await categorizeTransaction(messageBody);
         console.log('Análisis de Groq:', analysis);
 
@@ -99,7 +154,11 @@ app.post('/webhook', async (req, res) => {
         if (!defaultAccount) {
           console.error('Usuario no tiene cuentas');
           try {
-            await sendWhatsAppMessage(from, '⚠️ No tienes cuentas configuradas. Revisa tu perfil en la web.');
+            await sendWhatsAppMessage(from, 
+              '⚠️ No tienes cuentas configuradas.\n\n' +
+              'Crea una cuenta desde la web:\n' +
+              'https://finanzapp-76702.web.app'
+            );
           } catch (err) {
             console.log('Error enviando mensaje:', err.message);
           }
@@ -116,7 +175,7 @@ app.post('/webhook', async (req, res) => {
           description: messageBody,
           createdAt: new Date(),
           source: 'whatsapp',
-          whatsappMessageId: messageId  // Guardar ID para referencia
+          whatsappMessageId: messageId
         });
 
         console.log('✅ Transacción creada:', transaction.id);
@@ -142,7 +201,7 @@ app.post('/webhook', async (req, res) => {
     res.sendStatus(200);
   } catch (error) {
     console.error('Error procesando webhook:', error);
-    res.sendStatus(200); // Retornar 200 para que Meta no reintente
+    res.sendStatus(200);
   }
 });
 
