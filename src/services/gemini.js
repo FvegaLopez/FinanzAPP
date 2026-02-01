@@ -4,7 +4,7 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 async function categorizeTransaction(description) {
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-3.0-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
     
     const prompt = `Analiza esta transacción financiera y responde SOLO con un JSON válido (sin markdown, sin \`\`\`):
 
