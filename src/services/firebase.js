@@ -39,8 +39,8 @@ async function createUser(whatsappNumber, name) {
 async function createTransaction(data) {
   const transaction = {
     ...data,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    source: 'whatsapp'
+    createdAt: data.createdAt || new Date(), // Asegurar que siempre exista
+    source: data.source || 'manual'
   };
   
   const docRef = await db.collection('transactions').add(transaction);

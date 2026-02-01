@@ -60,14 +60,16 @@ app.post('/webhook', async (req, res) => {
         }
 
         // Crear transacción
+        // Crear transacción
         const transaction = await createTransaction({
-          accountId: defaultAccount.id,
-          userId: user.id,
-          type: analysis.type,
-          amount: analysis.amount,
-          category: analysis.category,
-          description: messageBody,
-          date: new Date()
+        accountId: defaultAccount.id,
+        userId: user.id,
+        type: analysis.type,
+        amount: analysis.amount,
+        category: analysis.category,
+        description: messageBody,
+        createdAt: new Date(), // Cambiar 'date' por 'createdAt'
+        source: 'whatsapp' // Importante: distinguir la fuente
         });
 
         // Responder al usuario
