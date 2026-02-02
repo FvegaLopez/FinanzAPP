@@ -5,6 +5,49 @@ const groq = new OpenAI({
   apiKey: process.env.GROQ_API_KEY
 });
 
+// Detectar si el mensaje es una transacción o otra cosa
+async function detectIntention(message) {
+  try {
+    const response = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        {
+          role: 'system',
+          content: `Eres un clasificador de intenciones para una app de finanzas personales llamada FinanzApp.
+
+Tu única tarea es clasificar el mensaje del usuario en una de estas categorías:
+
+1. "transaction" → El usuario quiere registrar un gasto o ingreso. Ejemplos: "Gasté 5000 en supermercado", "Recibí mi sueldo", "Uber 3500", "Compré zapatillas por 45000", "Pagué 12000 en arriendo"
+2. "greeting" → El usuario saluda o hace conversación casual. Ejemplos: "Hola", "Buenos días", "Qué onda", "Hey", "Hola amigo"
+3. "help" → El usuario pide ayuda o no sabe cómo usar la app. Ejemplos: "Ayuda", "Cómo uso esto", "Qué puedo hacer", "Help", "Opciones"
+4. "balance" → El usuario quiere ver su balance o un resumen. Ejemplos: "Cuánto tengo", "Mi balance", "Resumen", "Estado de cuenta", "Cuánto me queda"
+5. "unknown" → No encaja en ninguna categoría anterior.
+
+Responde SOLO con un JSON válido, sin markdown, sin explicaciones:
+{"intention": "categoría"}`
+        },
+        {
+          role: 'user',
+          content: message
+        }
+      ],
+      temperature: 0,
+      max_tokens: 50
+    });
+
+    const text = response.choices[0].message.content.trim();
+    const cleaned = text.replace(/```json\n?|\n?```/g, '').trim();
+    const result = JSON.parse(cleaned);
+    
+    console.log(`Intención detectada: ${result.intention} (mensaje: "${message}")`);
+    return result.intention;
+  } catch (error) {
+    console.error('Error detectando intención:', error.message);
+    return 'unknown';
+  }
+}
+
+// Categorizar transacción financiera
 async function categorizeTransaction(description) {
   try {
     const response = await groq.chat.completions.create({
@@ -51,4 +94,4 @@ Ejemplos:
   }
 }
 
-module.exports = { categorizeTransaction };
+module.exports = { detectIntention, categorizeTransaction };
