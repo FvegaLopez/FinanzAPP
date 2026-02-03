@@ -84,9 +84,42 @@ async function getUserAccounts(userId) {
   return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 }
 
+// Crear cuenta
+async function createAccount(userId, accountName) {
+  const accountData = {
+    name: accountName,
+    owners: [userId],
+    balance: 0,
+    isDefault: false,
+    createdAt: admin.firestore.FieldValue.serverTimestamp()
+  };
+
+  const docRef = await db.collection('accounts').add(accountData);
+  return { id: docRef.id, ...accountData };
+}
+
+// Eliminar cuenta
+async function deleteAccount(accountId) {
+  await db.collection('accounts').doc(accountId).delete();
+}
+
+// Establecer cuenta por defecto
+async function setDefaultAccount(userId, accountId) {
+  const accounts = await getUserAccounts(userId);
+  
+  for (const acc of accounts) {
+    await db.collection('accounts').doc(acc.id).update({
+      isDefault: acc.id === accountId
+    });
+  }
+}
+
 module.exports = {
   findUserByPhone,
   createUser,
   createTransaction,
-  getUserAccounts
+  getUserAccounts,
+  createAccount,
+  deleteAccount,
+  setDefaultAccount
 };

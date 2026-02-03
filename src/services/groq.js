@@ -94,4 +94,43 @@ Ejemplos:
   }
 }
 
-module.exports = { detectIntention, categorizeTransaction };
+// Detectar nombre de cuenta en el mensaje
+async function detectAccountInMessage(message, userAccounts) {
+  if (!userAccounts || userAccounts.length === 0) return null;
+
+  const accountNames = userAccounts.map(a => a.name.toLowerCase());
+  const messageLower = message.toLowerCase();
+
+  // Buscar coincidencia exacta
+  for (const account of userAccounts) {
+    if (messageLower.includes(account.name.toLowerCase())) {
+      return account;
+    }
+  }
+
+  // Buscar por palabras clave comunes
+  if (messageLower.includes('efectivo') || messageLower.includes('cash')) {
+    return userAccounts.find(a => a.name.toLowerCase().includes('efectivo'));
+  }
+  if (messageLower.includes('debito') || messageLower.includes('débito') || messageLower.includes('tarjeta')) {
+    return userAccounts.find(a => a.name.toLowerCase().includes('debito') || a.name.toLowerCase().includes('débito'));
+  }
+  if (messageLower.includes('ahorro')) {
+    return userAccounts.find(a => a.name.toLowerCase().includes('ahorro'));
+  }
+
+  return null;
+}
+
+// Extraer monto de transferencia
+function extractTransferAmount(message) {
+  const match = message.match(/(\d+\.?\d*)/);
+  return match ? parseFloat(match[1]) : null;
+}
+
+module.exports = { 
+  detectIntention, 
+  categorizeTransaction,
+  detectAccountInMessage,
+  extractTransferAmount
+};
