@@ -98,17 +98,14 @@ Ejemplos:
 async function detectAccountInMessage(message, userAccounts) {
   if (!userAccounts || userAccounts.length === 0) return null;
 
-  const accountNames = userAccounts.map(a => a.name.toLowerCase());
   const messageLower = message.toLowerCase();
 
-  // Buscar coincidencia exacta
   for (const account of userAccounts) {
     if (messageLower.includes(account.name.toLowerCase())) {
       return account;
     }
   }
 
-  // Buscar por palabras clave comunes
   if (messageLower.includes('efectivo') || messageLower.includes('cash')) {
     return userAccounts.find(a => a.name.toLowerCase().includes('efectivo'));
   }
@@ -128,9 +125,25 @@ function extractTransferAmount(message) {
   return match ? parseFloat(match[1]) : null;
 }
 
+// Detectar comando de invitación
+function parseInviteCommand(message) {
+  const regex = /invitar\s+a?\s*([\+\d@\.]+)\s+a\s+(.+)/i;
+  const match = message.match(regex);
+  
+  if (match) {
+    return {
+      phoneNumber: match[1].trim(),
+      accountName: match[2].trim()
+    };
+  }
+  
+  return null;
+}
+
 module.exports = { 
   detectIntention, 
   categorizeTransaction,
   detectAccountInMessage,
-  extractTransferAmount
+  extractTransferAmount,
+  parseInviteCommand
 };

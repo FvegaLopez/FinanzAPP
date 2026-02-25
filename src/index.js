@@ -1,8 +1,8 @@
 require('dotenv').config();
 const express = require('express');
-const { detectIntention, categorizeTransaction, detectAccountInMessage, extractTransferAmount } = require('./services/groq');
-const { findUserByPhone, createTransaction, getUserAccounts, createAccount, deleteAccount, setDefaultAccount } = require('./services/firebase');
-const { sendWhatsAppMessage, sendWhatsAppList } = require('./services/whatsapp');
+const { detectIntention, categorizeTransaction, detectAccountInMessage, extractTransferAmount, parseInviteCommand } = require('./services/groq');
+const { findUserByPhone, findUserByEmailOrPhone, createTransaction, getUserAccounts, createAccount, deleteAccount, setDefaultAccount, createInvitation, getPendingInvitations, acceptInvitation, rejectInvitation } = require('./services/firebase');
+const { sendWhatsAppMessage, sendWhatsAppButtons, sendWhatsAppList } = require('./services/whatsapp');
 
 const app = express();
 app.use(express.json());
@@ -10,7 +10,7 @@ app.use(express.json());
 // Cache en memoria
 const processedMessages = new Map();
 const firstMessageCache = new Map();
-const conversationState = new Map(); // Para manejar flujos multi-paso
+const conversationState = new Map();
 const MAX_CACHE_SIZE = 100;
 
 function isDuplicate(messageId) {
@@ -33,7 +33,6 @@ function markAsWelcomed(phone) {
   firstMessageCache.set(phone, Date.now());
 }
 
-// Manejo de estado de conversación
 function setConversationState(phone, state) {
   conversationState.set(phone, { ...state, timestamp: Date.now() });
 }
@@ -42,7 +41,6 @@ function getConversationState(phone) {
   const state = conversationState.get(phone);
   if (!state) return null;
   
-  // Expirar estados después de 5 minutos
   if (Date.now() - state.timestamp > 5 * 60 * 1000) {
     conversationState.delete(phone);
     return null;
@@ -57,11 +55,23 @@ function clearConversationState(phone) {
 
 // Respuestas
 function getGreetingResponse(userName) {
-  return `¡Hola ${userName}! 👋\n\n💸 Registrar gasto:\n"Gasté 5000 en supermercado"\n"Uber 3500 en efectivo"\n\n💰 Ver balance:\n"Mis cuentas"\n\n🏦 Gestionar cuentas:\n"Crear cuenta Tarjeta"\n"Eliminar cuenta Efectivo"\n\n💱 Transferir:\n"Transferir 10000 de Débito a Efectivo"`;
+  return `¡Hola ${userName}! 👋\n\n💸 Registrar gasto:\n"Gasté 5000 en supermercado"\n"Uber 3500 en efectivo"\n\n💰 Ver balance:\n"Mis cuentas"\n\n🏦 Gestionar cuentas:\n"Crear cuenta Tarjeta"\n"Eliminar cuenta Efectivo"\n\n👥 Compartir:\n"Invitar a 932518131 a Gastos del Hogar"\n\n💱 Transferir:\n"Transferir 10000 de Débito a Efectivo"`;
 }
 
 function getHelpResponse() {
-  return '📖 *Comandos disponibles*\n\n💸 *Transacciones:*\n"Gasté 5000 en supermercado"\n"Recibí 50000 de freelance"\n"Uber 3500 en efectivo"\n\n🏦 *Cuentas:*\n"Mis cuentas"\n"Crear cuenta Ahorros"\n"Eliminar cuenta Efectivo"\n\n💱 *Transferencias:*\n"Transferir 10000 de Débito a Efectivo"';
+  return '📖 *Comandos disponibles*\n\n' +
+    '💸 *Transacciones:*\n' +
+    '"Gasté 5000 en supermercado"\n' +
+    '"Recibí 50000 de freelance"\n' +
+    '"Uber 3500 en efectivo"\n\n' +
+    '🏦 *Cuentas:*\n' +
+    '"Mis cuentas"\n' +
+    '"Crear cuenta Ahorros"\n' +
+    '"Eliminar cuenta Efectivo"\n\n' +
+    '👥 *Compartir:*\n' +
+    '"Invitar a 932518131 a Gastos del Hogar"\n\n' +
+    '💱 *Transferencias:*\n' +
+    '"Transferir 10000 de Débito a Efectivo"';
 }
 
 async function getAccountsListResponse(userId) {
@@ -79,7 +89,8 @@ async function getAccountsListResponse(userId) {
                  account.name.toLowerCase().includes('debito') ? '💳' :
                  account.name.toLowerCase().includes('ahorro') ? '🏦' : '💼';
     const defaultMark = account.isDefault ? ' ⭐' : '';
-    response += `${icon} ${account.name}${defaultMark}: $${account.balance?.toLocaleString('es-CL') || 0}\n`;
+    const sharedMark = account.owners && account.owners.length > 1 ? ' 👥' : '';
+    response += `${icon} ${account.name}${defaultMark}${sharedMark}: $${account.balance?.toLocaleString('es-CL') || 0}\n`;
     total += account.balance || 0;
   });
   
@@ -115,7 +126,16 @@ app.post('/webhook', async (req, res) => {
         const message = messages[0];
         const messageId = message.id;
         const from = message.from;
-        const messageBody = message.text?.body;
+        
+        let messageBody = message.text?.body;
+
+        if (message.type === 'interactive') {
+          if (message.interactive.type === 'button_reply') {
+            messageBody = message.interactive.button_reply.title;
+          } else if (message.interactive.type === 'list_reply') {
+            messageBody = message.interactive.list_reply.id;
+          }
+        }
 
         console.log(`Mensaje: ${messageBody} de ${from} (${messageId})`);
 
@@ -142,8 +162,36 @@ app.post('/webhook', async (req, res) => {
 
         console.log(`✅ Usuario: ${user.name}`);
 
+        // Verificar invitaciones pendientes al primer mensaje
         if (isFirstMessage(from)) {
           markAsWelcomed(from);
+          
+          const pendingInvites = await getPendingInvitations(from);
+          if (pendingInvites.length > 0) {
+            for (const invite of pendingInvites) {
+              const inviterName = invite.inviter?.name || 'Un usuario';
+              const accountName = invite.account?.name || 'una cuenta';
+              
+              try {
+                await sendWhatsAppButtons(from, 
+                  `👋 ${inviterName} te invitó a la cuenta compartida "${accountName}"\n\n¿Aceptas?`,
+                  [
+                    { title: 'Aceptar' },
+                    { title: 'Rechazar' }
+                  ]
+                );
+
+                setConversationState(from, {
+                  type: 'awaiting_invitation_response',
+                  invitationId: invite.id
+                });
+              } catch (err) {
+                console.log('Error enviando invitación:', err.message);
+              }
+            }
+            return res.sendStatus(200);
+          }
+
           try {
             await sendWhatsAppMessage(from, getGreetingResponse(user.name));
           } catch (err) {}
@@ -156,10 +204,20 @@ app.post('/webhook', async (req, res) => {
         // CASO: Esperando selección de cuenta para transacción
         if (state && state.type === 'awaiting_account_selection') {
           const accounts = await getUserAccounts(user.id);
-          const selectedAccount = accounts.find((a, i) => (i + 1).toString() === messageBody.trim());
+          
+          let selectedAccount = null;
+          
+          const accountIndex = parseInt(messageBody.trim()) - 1;
+          if (!isNaN(accountIndex) && accountIndex >= 0 && accountIndex < accounts.length) {
+            selectedAccount = accounts[accountIndex];
+          } else {
+            selectedAccount = accounts.find((acc, i) => 
+              messageBody.includes(acc.name) || 
+              messageBody.startsWith(`${i + 1}`)
+            );
+          }
 
           if (selectedAccount) {
-            // Crear transacción
             await createTransaction({
               accountId: selectedAccount.id,
               userId: user.id,
@@ -212,6 +270,110 @@ app.post('/webhook', async (req, res) => {
           return res.sendStatus(200);
         }
 
+        // CASO: Esperando confirmación de invitación (usuario existe)
+        if (state && state.type === 'awaiting_invite_confirmation') {
+          if (messageBody.toLowerCase().includes('invitar')) {
+            try {
+              await createInvitation(state.accountId, user.id, state.inviteeIdentifier);
+              await sendWhatsAppMessage(from, 
+                `✅ Invitación enviada a ${state.foundUser.name}\n\n` +
+                `Recibirá una notificación para aceptar la invitación.`
+              );
+
+              if (state.foundUser.whatsappNumber) {
+                try {
+                  await sendWhatsAppButtons(state.foundUser.whatsappNumber,
+                    `👋 ${user.name} te invitó a la cuenta compartida "${state.accountName}"\n\n¿Aceptas?`,
+                    [
+                      { title: 'Aceptar' },
+                      { title: 'Rechazar' }
+                    ]
+                  );
+
+                  setConversationState(state.foundUser.whatsappNumber, {
+                    type: 'awaiting_invitation_response',
+                    inviterName: user.name,
+                    accountName: state.accountName
+                  });
+                } catch (err) {
+                  console.log('Error notificando invitado:', err.message);
+                }
+              }
+            } catch (err) {
+              await sendWhatsAppMessage(from, '⚠️ Error al enviar la invitación');
+            }
+          } else {
+            await sendWhatsAppMessage(from, 'Invitación cancelada.');
+          }
+          clearConversationState(from);
+          return res.sendStatus(200);
+        }
+
+        // CASO: Esperando confirmación para invitar a registrarse (usuario NO existe)
+        if (state && state.type === 'awaiting_invite_to_register') {
+          if (messageBody.toLowerCase().includes('invitar')) {
+            try {
+              await createInvitation(state.accountId, user.id, state.inviteeIdentifier);
+              await sendWhatsAppMessage(from, 
+                `✅ Invitación pendiente creada\n\n` +
+                `Cuando ${state.inviteeIdentifier} se registre en FinanzApp, ` +
+                `automáticamente se unirá a "${state.accountName}"`
+              );
+            } catch (err) {
+              await sendWhatsAppMessage(from, '⚠️ Error al crear la invitación');
+            }
+          } else {
+            await sendWhatsAppMessage(from, 'Invitación cancelada.');
+          }
+          clearConversationState(from);
+          return res.sendStatus(200);
+        }
+
+        // CASO: Esperando respuesta a invitación
+        if (state && state.type === 'awaiting_invitation_response') {
+          const pendingInvites = await getPendingInvitations(from);
+          
+          if (pendingInvites.length > 0) {
+            const invite = pendingInvites[0];
+
+            if (messageBody.toLowerCase().includes('aceptar')) {
+              try {
+                await acceptInvitation(invite.id, user.id);
+                await sendWhatsAppMessage(from, 
+                  `✅ Ahora compartes "${invite.account.name}" con ${invite.inviter.name}`
+                );
+
+                if (invite.inviter?.whatsappNumber) {
+                  try {
+                    await sendWhatsAppMessage(invite.inviter.whatsappNumber,
+                      `✅ ${user.name} aceptó tu invitación a "${invite.account.name}"`
+                    );
+                  } catch (err) {}
+                }
+              } catch (err) {
+                await sendWhatsAppMessage(from, '⚠️ Error al aceptar la invitación');
+              }
+            } else {
+              try {
+                await rejectInvitation(invite.id);
+                await sendWhatsAppMessage(from, 'Invitación rechazada.');
+
+                if (invite.inviter?.whatsappNumber) {
+                  try {
+                    await sendWhatsAppMessage(invite.inviter.whatsappNumber,
+                      `❌ ${user.name} rechazó tu invitación a "${invite.account.name}"`
+                    );
+                  } catch (err) {}
+                }
+              } catch (err) {}
+            }
+          } else {
+            await sendWhatsAppMessage(from, '⚠️ No encontré invitaciones pendientes');
+          }
+          clearConversationState(from);
+          return res.sendStatus(200);
+        }
+
         // CASO: Cancelar flujo
         if (messageBody.toLowerCase() === 'cancelar') {
           clearConversationState(from);
@@ -257,11 +419,9 @@ app.post('/webhook', async (req, res) => {
               break;
             }
 
-            // Detectar si mencionó una cuenta en el mensaje
             const detectedAccount = await detectAccountInMessage(messageBody, accounts);
 
             if (detectedAccount) {
-              // Cuenta detectada automáticamente
               await createTransaction({
                 accountId: detectedAccount.id,
                 userId: user.id,
@@ -287,7 +447,6 @@ app.post('/webhook', async (req, res) => {
                 );
               } catch (err) {}
             } else if (accounts.length === 1) {
-              // Solo una cuenta, usarla automáticamente
               const defaultAccount = accounts[0];
               
               await createTransaction({
@@ -315,18 +474,25 @@ app.post('/webhook', async (req, res) => {
                 );
               } catch (err) {}
             } else {
-              // Múltiples cuentas → preguntar
-              let response = `💸 ${analysis.type === 'income' ? 'Ingreso' : 'Gasto'} de $${analysis.amount?.toLocaleString('es-CL')} en ${analysis.category}\n\n¿En qué cuenta?\n\n`;
-              accounts.forEach((acc, i) => {
-                const icon = acc.name.toLowerCase().includes('efectivo') ? '💵' :
-                             acc.name.toLowerCase().includes('debito') ? '💳' :
-                             acc.name.toLowerCase().includes('ahorro') ? '🏦' : '💼';
-                response += `${i + 1} - ${icon} ${acc.name}\n`;
-              });
-              response += '\nResponde con el número de la cuenta.';
+              const emoji = analysis.type === 'income' ? 'Ingreso' : 'Gasto';
+              const bodyText = `💸 ${emoji} de $${analysis.amount?.toLocaleString('es-CL')} en ${analysis.category}\n\n¿En qué cuenta?`;
 
               try {
-                await sendWhatsAppMessage(from, response);
+                if (accounts.length <= 3) {
+                  await sendWhatsAppButtons(from, bodyText, accounts.map((acc, i) => ({
+                    title: `${i + 1}. ${acc.name}`.substring(0, 20)
+                  })));
+                } else {
+                  await sendWhatsAppList(from, bodyText, 'Seleccionar cuenta', [{
+                    title: 'Cuentas',
+                    rows: accounts.map((acc, i) => ({
+                      id: `${i + 1}`,
+                      title: acc.name.substring(0, 24),
+                      description: `Balance: $${acc.balance?.toLocaleString('es-CL')}`
+                    }))
+                  }]);
+                }
+
                 setConversationState(from, {
                   type: 'awaiting_account_selection',
                   transaction: {
@@ -336,14 +502,92 @@ app.post('/webhook', async (req, res) => {
                     description: messageBody
                   }
                 });
-              } catch (err) {}
+              } catch (err) {
+                console.log('Error enviando selección:', err.message);
+              }
             }
             break;
 
           case 'unknown':
           default:
-            // Detectar comandos específicos
             const msgLower = messageBody.toLowerCase();
+
+            // INVITAR USUARIO
+            const inviteCommand = parseInviteCommand(messageBody);
+            if (inviteCommand) {
+              const accounts = await getUserAccounts(user.id);
+              const account = accounts.find(a => 
+                a.name.toLowerCase() === inviteCommand.accountName.toLowerCase()
+              );
+
+              if (!account) {
+                try {
+                  await sendWhatsAppMessage(from, 
+                    `⚠️ No encontré la cuenta "${inviteCommand.accountName}"\n\n` +
+                    `Tus cuentas: ${accounts.map(a => a.name).join(', ')}`
+                  );
+                } catch (err) {}
+                break;
+              }
+
+              let identifier = inviteCommand.phoneNumber;
+              if (!identifier.includes('@')) {
+                if (!identifier.startsWith('56')) {
+                  identifier = '56' + identifier;
+                }
+              }
+
+              const foundUser = await findUserByEmailOrPhone(identifier);
+
+              if (foundUser) {
+                try {
+                  await sendWhatsAppButtons(from,
+                    `✅ Usuario encontrado:\n\n` +
+                    `Nombre: ${foundUser.name}\n` +
+                    `${foundUser.email ? 'Email: ' + foundUser.email + '\n' : ''}` +
+                    `${foundUser.whatsappNumber ? 'WhatsApp: ' + foundUser.whatsappNumber + '\n' : ''}` +
+                    `\n¿Invitar a la cuenta "${account.name}"?`,
+                    [
+                      { title: 'Sí, invitar' },
+                      { title: 'Cancelar' }
+                    ]
+                  );
+
+                  setConversationState(from, {
+                    type: 'awaiting_invite_confirmation',
+                    accountId: account.id,
+                    accountName: account.name,
+                    inviteeIdentifier: identifier,
+                    foundUser: foundUser
+                  });
+                } catch (err) {
+                  console.log('Error:', err.message);
+                }
+              } else {
+                try {
+                  await sendWhatsAppButtons(from,
+                    `⚠️ Usuario no encontrado\n\n` +
+                    `No existe un usuario con: ${identifier}\n\n` +
+                    `¿Quieres invitarlo a registrarse en FinanzApp?\n` +
+                    `Cuando se registre, automáticamente se unirá a "${account.name}"`,
+                    [
+                      { title: 'Invitar a registrarse' },
+                      { title: 'Cancelar' }
+                    ]
+                  );
+
+                  setConversationState(from, {
+                    type: 'awaiting_invite_to_register',
+                    accountId: account.id,
+                    accountName: account.name,
+                    inviteeIdentifier: identifier
+                  });
+                } catch (err) {
+                  console.log('Error:', err.message);
+                }
+              }
+              break;
+            }
 
             // CREAR CUENTA
             if (msgLower.startsWith('crear cuenta ')) {
@@ -402,7 +646,6 @@ app.post('/webhook', async (req, res) => {
               const amount = extractTransferAmount(messageBody);
               const accounts = await getUserAccounts(user.id);
               
-              // Intentar detectar cuentas origen y destino
               let fromAccount = null;
               let toAccount = null;
               
@@ -421,7 +664,6 @@ app.post('/webhook', async (req, res) => {
                     await sendWhatsAppMessage(from, `⚠️ ${fromAccount.name} no tiene suficiente saldo.`);
                   } catch (err) {}
                 } else {
-                  // Crear dos transacciones (salida y entrada)
                   await createTransaction({
                     accountId: fromAccount.id,
                     userId: user.id,
@@ -462,7 +704,6 @@ app.post('/webhook', async (req, res) => {
               break;
             }
 
-            // No se reconoció
             try {
               await sendWhatsAppMessage(from,
                 '🤔 No entendí ese comando.\n\nEscribe "ayuda" para ver las opciones.'
