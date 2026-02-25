@@ -67,7 +67,8 @@ function getHelpResponse() {
     '🏦 *Cuentas:*\n' +
     '"Mis cuentas"\n' +
     '"Crear cuenta Ahorros"\n' +
-    '"Eliminar cuenta Efectivo"\n\n' +
+    '"Eliminar cuenta Efectivo"\n' +
+    '"Renombrar Efectivo a Billetera"\n\n' +
     '👥 *Compartir:*\n' +
     '"Invitar a 932518131 a Gastos del Hogar"\n\n' +
     '💱 *Transferencias:*\n' +
@@ -251,6 +252,28 @@ app.post('/webhook', async (req, res) => {
             } catch (err) {}
             return res.sendStatus(200);
           }
+        }
+
+        // CASO: Esperando confirmación de renombrar cuenta
+        if (state && state.type === 'awaiting_rename_confirmation') {
+          if (messageBody.toLowerCase().includes('renombrar')) {
+            try {
+              const admin = require('firebase-admin');
+              await admin.firestore().collection('accounts').doc(state.accountId).update({
+                name: state.newName
+              });
+              
+              await sendWhatsAppMessage(from, 
+                `✅ Cuenta renombrada\n\n"${state.oldName}" → "${state.newName}"`
+              );
+            } catch (err) {
+              await sendWhatsAppMessage(from, '⚠️ Error al renombrar la cuenta');
+            }
+          } else {
+            await sendWhatsAppMessage(from, 'Renombrado cancelado.');
+          }
+          clearConversationState(from);
+          return res.sendStatus(200);
         }
 
         // CASO: Esperando confirmación de eliminación
@@ -699,6 +722,50 @@ app.post('/webhook', async (req, res) => {
                   await sendWhatsAppMessage(from,
                     '⚠️ Formato: "Transferir 10000 de Débito a Efectivo"'
                   );
+                } catch (err) {}
+              }
+              break;
+            }
+
+            // RENOMBRAR CUENTA
+            if (msgLower.startsWith('renombrar ')) {
+              // Formato: "Renombrar Efectivo a Billetera"
+              const regex = /renombrar\s+(.+)\s+a\s+(.+)/i;
+              const match = messageBody.match(regex);
+
+              if (match) {
+                const oldName = match[1].trim();
+                const newName = match[2].trim();
+                const accounts = await getUserAccounts(user.id);
+                const account = accounts.find(a => a.name.toLowerCase() === oldName.toLowerCase());
+
+                if (account) {
+                  try {
+                    await sendWhatsAppButtons(from,
+                      `¿Renombrar "${account.name}" a "${newName}"?`,
+                      [
+                        { title: 'Sí, renombrar' },
+                        { title: 'Cancelar' }
+                      ]
+                    );
+
+                    setConversationState(from, {
+                      type: 'awaiting_rename_confirmation',
+                      accountId: account.id,
+                      oldName: account.name,
+                      newName: newName
+                    });
+                  } catch (err) {
+                    console.log('Error:', err.message);
+                  }
+                } else {
+                  try {
+                    await sendWhatsAppMessage(from, `⚠️ No encontré la cuenta "${oldName}"`);
+                  } catch (err) {}
+                }
+              } else {
+                try {
+                  await sendWhatsAppMessage(from, '⚠️ Formato: "Renombrar Efectivo a Billetera"');
                 } catch (err) {}
               }
               break;
