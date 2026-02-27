@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const { detectIntention, categorizeTransaction, detectAccountInMessage, extractTransferAmount, parseInviteCommand } = require('./services/groq');
-const { findUserByPhone, findUserByEmailOrPhone, createTransaction, getUserAccounts, createAccount, deleteAccount, setDefaultAccount, createInvitation, getPendingInvitations, acceptInvitation, rejectInvitation } = require('./services/firebase');
+const { findUserByPhone, findUserByEmailOrPhone, createTransaction, getUserAccounts, createAccount, deleteAccount, setDefaultAccount, createInvitation, getPendingInvitations, acceptInvitation, rejectInvitation, isMessageProcessed, markMessageAsProcessed } = require('./services/firebase');
 const { sendWhatsAppMessage, sendWhatsAppButtons, sendWhatsAppList } = require('./services/whatsapp');
 
 const app = express();
@@ -140,11 +140,16 @@ app.post('/webhook', async (req, res) => {
 
         console.log(`Mensaje: ${messageBody} de ${from} (${messageId})`);
 
-        if (isDuplicate(messageId)) {
-          console.log(`⚠️ Duplicado ignorado`);
+        // Verificar duplicado en Firestore (persistente, sobrevive reinicios)
+        const alreadyProcessed = await isMessageProcessed(messageId);
+        if (alreadyProcessed) {
+          console.log(`⚠️ Duplicado ignorado (Firestore): ${messageId}`);
           return res.sendStatus(200);
         }
-        markAsProcessed(messageId);
+
+        // Marcar INMEDIATAMENTE en Firestore
+        await markMessageAsProcessed(messageId);
+        console.log(`✅ Mensaje marcado como procesado: ${messageId}`);
 
         let user = await findUserByPhone(from);
 

@@ -253,6 +253,21 @@ async function rejectInvitation(invitationId) {
   });
 }
 
+// Verificar si mensaje ya fue procesado
+async function isMessageProcessed(messageId) {
+  const docRef = db.collection('processed_messages').doc(messageId);
+  const doc = await docRef.get();
+  return doc.exists;
+}
+
+// Marcar mensaje como procesado
+async function markMessageAsProcessed(messageId) {
+  await db.collection('processed_messages').doc(messageId).set({
+    processedAt: admin.firestore.FieldValue.serverTimestamp(),
+    expiresAt: admin.firestore.Timestamp.fromDate(new Date(Date.now() + 24 * 60 * 60 * 1000))
+  });
+}
+
 module.exports = {
   findUserByPhone,
   findUserByEmail,
@@ -266,5 +281,7 @@ module.exports = {
   createInvitation,
   getPendingInvitations,
   acceptInvitation,
-  rejectInvitation
+  rejectInvitation,
+  isMessageProcessed,
+  markMessageAsProcessed
 };
