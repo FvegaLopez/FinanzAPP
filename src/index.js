@@ -3,6 +3,7 @@ const express = require('express');
 const { detectIntention, categorizeTransaction, detectAccountInMessage, extractTransferAmount, parseInviteCommand } = require('./services/groq');
 const { findUserByPhone, findUserByEmailOrPhone, createTransaction, getUserAccounts, createAccount, deleteAccount, setDefaultAccount, createInvitation, getPendingInvitations, acceptInvitation, rejectInvitation, isMessageProcessed, markMessageAsProcessed } = require('./services/firebase');
 const { sendWhatsAppMessage, sendWhatsAppButtons, sendWhatsAppList } = require('./services/whatsapp');
+const { db } = require('./config/firebase-admin');
 
 const app = express();
 app.use(express.json());
@@ -169,10 +170,18 @@ app.post('/webhook', async (req, res) => {
         console.log(`✅ Usuario: ${user.name}`);
 
         // Verificar invitaciones pendientes al primer mensaje
-        if (isFirstMessage(from)) {
-          markAsWelcomed(from);
-          
+        // Verificar si es primera vez REAL (nunca ha usado el bot)
+        const userTransactionsSnapshot = await db.collection('transactions')
+          .where('userId', '==', user.id)
+          .limit(1)
+          .get();
+
+        const isReallyFirstTime = userTransactionsSnapshot.empty;
+
+        if (isReallyFirstTime) {
+          // Primera vez en la historia
           const pendingInvites = await getPendingInvitations(from);
+          
           if (pendingInvites.length > 0) {
             for (const invite of pendingInvites) {
               const inviterName = invite.inviter?.name || 'Un usuario';
@@ -202,6 +211,15 @@ app.post('/webhook', async (req, res) => {
             await sendWhatsAppMessage(from, getGreetingResponse(user.name));
           } catch (err) {}
           return res.sendStatus(200);
+        }
+
+        // Usuario que ya usó el bot antes (bienvenida corta + continuar)
+        if (isFirstMessage(from)) {
+          markAsWelcomed(from);
+          try {
+            await sendWhatsAppMessage(from, `¡Bienvenido de vuelta, ${user.name}! 👋`);
+          } catch (err) {}
+          // NO hacer return aquí, seguir procesando
         }
 
         // VERIFICAR ESTADO DE CONVERSACIÓN
