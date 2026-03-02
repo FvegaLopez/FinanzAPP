@@ -225,12 +225,34 @@ app.post('/webhook', async (req, res) => {
         }
 
         // Usuario que ya usó el bot antes (bienvenida corta + continuar)
+        // Usuario que ya usó el bot antes
         if (isFirstMessage(from)) {
           markAsWelcomed(from);
-          try {
-            await sendWhatsAppMessage(from, `¡Bienvenido de vuelta, ${user.name}! 👋`);
-          } catch (err) {}
-          // NO hacer return aquí, seguir procesando
+          
+          // Detectar intención para decidir tipo de bienvenida
+          const welcomeIntention = await detectIntention(messageBody);
+          
+          if (welcomeIntention === 'greeting' || welcomeIntention === 'help') {
+            // Si es saludo/ayuda → Bienvenida completa
+            try {
+              await sendWhatsAppMessage(from, 
+                `¡Bienvenido de vuelta, ${user.name}! 👋\n\n` +
+                `Recuerda que conmigo puedes:\n\n` +
+                `💸 Registrar gastos: "Gasté 5000 en supermercado"\n` +
+                `💰 Ver balance: "Mis cuentas"\n` +
+                `🏦 Gestionar cuentas: "Crear cuenta Tarjeta"\n` +
+                `👥 Compartir: "Invitar a 932518131 a Gastos del Hogar"\n` +
+                `💱 Transferir: "Transferir 10000 de Débito a Efectivo"`
+              );
+            } catch (err) {}
+            return res.sendStatus(200);
+          } else {
+            // Si es comando/transacción → Solo "Bienvenido de vuelta" y continuar
+            try {
+              await sendWhatsAppMessage(from, `¡Bienvenido de vuelta, ${user.name}! 👋`);
+            } catch (err) {}
+            // NO hacer return, seguir procesando
+          }
         }
 
         // VERIFICAR ESTADO DE CONVERSACIÓN
