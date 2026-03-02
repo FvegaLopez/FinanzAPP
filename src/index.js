@@ -238,10 +238,10 @@ app.post('/webhook', async (req, res) => {
               await sendWhatsAppMessage(from, 
                 `¡Bienvenido de vuelta, ${user.name}! 👋\n\n` +
                 `Recuerda que conmigo puedes:\n\n` +
-                `💸 Registrar gastos: "Gasté 5000 en supermercado"\n` +
-                `💰 Ver balance: "Mis cuentas"\n` +
-                `🏦 Gestionar cuentas: "Crear cuenta Tarjeta"\n` +
-                `👥 Compartir: "Invitar a 932518131 a Gastos del Hogar"\n` +
+                `💸 Registrar gastos: "Gasté 5000 en supermercado"\n\n` +
+                `💰 Ver balance: "Mis cuentas"\n\n` +
+                `🏦 Gestionar cuentas: "Crear cuenta Tarjeta"\n\n` +
+                `👥 Compartir: "Invitar a 932518131 a Gastos del Hogar"\n\n` +
                 `💱 Transferir: "Transferir 10000 de Débito a Efectivo"`
               );
             } catch (err) {}
