@@ -4,6 +4,7 @@ const { detectIntention, categorizeTransaction, detectAccountInMessage, extractT
 const { findUserByPhone, findUserByEmailOrPhone, createTransaction, getUserAccounts, createAccount, deleteAccount, setDefaultAccount, createInvitation, getPendingInvitations, acceptInvitation, rejectInvitation, isMessageProcessed, markMessageAsProcessed } = require('./services/firebase');
 const { sendWhatsAppMessage, sendWhatsAppButtons, sendWhatsAppList } = require('./services/whatsapp');
 const { db } = require('./config/firebase-admin');
+const { getMonthlyReport, getAccountMonthlyReport, formatGlobalReport, formatAccountReport, formatCategoryBreakdown, parseMonthFromText } = require('./services/reports');
 
 const app = express();
 app.use(express.json());
@@ -70,6 +71,10 @@ function getHelpResponse() {
     '"Crear cuenta Ahorros"\n' +
     '"Eliminar cuenta Efectivo"\n' +
     '"Renombrar Efectivo a Billetera"\n\n' +
+    '📊 *Resúmenes:*\n' +
+    '"Resumen mensual"\n' +
+    '"Resumen de Efectivo"\n' +
+    '"Resumen de enero"\n\n' +
     '👥 *Compartir:*\n' +
     '"Invitar a 932518131 a Gastos del Hogar"\n\n' +
     '💱 *Transferencias:*\n' +
@@ -453,6 +458,22 @@ app.post('/webhook', async (req, res) => {
           return res.sendStatus(200);
         }
 
+        // CASO: Esperando respuesta sobre desglose de categorías
+        if (state && state.type === 'awaiting_category_breakdown') {
+          if (messageBody.toLowerCase().includes('mostrar') || messageBody.toLowerCase().includes('sí')) {
+            try {
+              const message = formatCategoryBreakdown(state.report);
+              await sendWhatsAppMessage(from, message);
+            } catch (err) {
+              await sendWhatsAppMessage(from, '⚠️ Error al generar desglose.');
+            }
+          } else {
+            await sendWhatsAppMessage(from, 'De acuerdo, si necesitas algo más avísame 👍');
+          }
+          clearConversationState(from);
+          return res.sendStatus(200);
+        }
+
         // CASO: Cancelar flujo
         if (messageBody.toLowerCase() === 'cancelar') {
           clearConversationState(from);
@@ -590,6 +611,90 @@ app.post('/webhook', async (req, res) => {
           case 'unknown':
           default:
             const msgLower = messageBody.toLowerCase();
+
+            // RESUMEN MENSUAL GLOBAL
+            if (msgLower === 'resumen mensual' || msgLower === 'resumen') {
+              try {
+                const report = await getMonthlyReport(user.id);
+                const message = formatGlobalReport(report);
+                
+                await sendWhatsAppButtons(from,
+                  message + '\n\n¿Deseas un desglose por categoría?',
+                  [
+                    { title: 'Sí, mostrar' },
+                    { title: 'No, gracias' }
+                  ]
+                );
+
+                setConversationState(from, {
+                  type: 'awaiting_category_breakdown',
+                  report: report
+                });
+              } catch (err) {
+                console.error('Error generando resumen:', err);
+                await sendWhatsAppMessage(from, '⚠️ Error al generar el resumen.');
+              }
+              break;
+            }
+
+            // RESUMEN DE CUENTA ESPECÍFICA
+            if (msgLower.startsWith('resumen de ') || msgLower.startsWith('resumen ')) {
+              const parts = messageBody.split(' ');
+              
+              // Extraer mes si existe
+              const monthIndex = parseMonthFromText(messageBody);
+              const currentYear = new Date().getFullYear();
+              
+              // Determinar si es "resumen de [cuenta]" o "resumen de [mes]"
+              const accounts = await getUserAccounts(user.id);
+              let accountName = null;
+              
+              // Buscar si alguna cuenta coincide
+              for (const acc of accounts) {
+                if (msgLower.includes(acc.name.toLowerCase())) {
+                  accountName = acc.name;
+                  break;
+                }
+              }
+
+              try {
+                if (accountName) {
+                  // Resumen de cuenta específica
+                  const report = await getAccountMonthlyReport(user.id, accountName, monthIndex);
+                  const message = formatAccountReport(report);
+                  await sendWhatsAppMessage(from, message);
+                } else if (monthIndex !== null) {
+                  // Resumen global de un mes específico
+                  const report = await getMonthlyReport(user.id, monthIndex, currentYear);
+                  const message = formatGlobalReport(report);
+                  
+                  await sendWhatsAppButtons(from,
+                    message + '\n\n¿Deseas un desglose por categoría?',
+                    [
+                      { title: 'Sí, mostrar' },
+                      { title: 'No, gracias' }
+                    ]
+                  );
+
+                  setConversationState(from, {
+                    type: 'awaiting_category_breakdown',
+                    report: report
+                  });
+                } else {
+                  await sendWhatsAppMessage(from, 
+                    '⚠️ No entendí qué resumen necesitas.\n\n' +
+                    'Ejemplos:\n' +
+                    '• "Resumen mensual"\n' +
+                    '• "Resumen de Efectivo"\n' +
+                    '• "Resumen de enero"'
+                  );
+                }
+              } catch (err) {
+                console.error('Error generando resumen:', err);
+                await sendWhatsAppMessage(from, '⚠️ Error al generar el resumen.');
+              }
+              break;
+            }
 
             // INVITAR USUARIO
             const inviteCommand = parseInviteCommand(messageBody);
