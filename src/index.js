@@ -141,16 +141,27 @@ app.post('/webhook', async (req, res) => {
 
         console.log(`Mensaje: ${messageBody} de ${from} (${messageId})`);
 
-        // Verificar duplicado en Firestore (persistente, sobrevive reinicios)
+        // DOBLE PROTECCIÓN: Caché + Firestore
+        
+        // 1. Verificar caché en memoria (súper rápido)
+        if (isDuplicate(messageId)) {
+          console.log(`⚠️ Duplicado ignorado (caché): ${messageId}`);
+          return res.sendStatus(200);
+        }
+
+        // 2. Marcar en caché INMEDIATAMENTE
+        markAsProcessed(messageId);
+
+        // 3. Verificar en Firestore (persistente)
         const alreadyProcessed = await isMessageProcessed(messageId);
         if (alreadyProcessed) {
           console.log(`⚠️ Duplicado ignorado (Firestore): ${messageId}`);
           return res.sendStatus(200);
         }
 
-        // Marcar INMEDIATAMENTE en Firestore
+        // 4. Marcar en Firestore
         await markMessageAsProcessed(messageId);
-        console.log(`✅ Mensaje marcado como procesado: ${messageId}`);
+        console.log(`✅ Mensaje procesado: ${messageId}`);
 
         let user = await findUserByPhone(from);
 
