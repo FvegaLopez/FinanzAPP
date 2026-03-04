@@ -483,6 +483,83 @@ app.post('/webhook', async (req, res) => {
           return res.sendStatus(200);
         }
 
+        // RESUMEN MENSUAL GLOBAL
+        if (msgLower === 'resumen mensual' || msgLower === 'resumen') {
+          try {
+            const report = await getMonthlyReport(user.id);
+            const message = formatGlobalReport(report);
+            
+            await sendWhatsAppButtons(from,
+              message + '\n\n¿Deseas un desglose por categoría?',
+              [
+                { title: 'Sí, mostrar' },
+                { title: 'No, gracias' }
+              ]
+            );
+
+            setConversationState(from, {
+              type: 'awaiting_category_breakdown',
+              report: report
+            });
+          } catch (err) {
+            console.error('Error generando resumen:', err);
+            await sendWhatsAppMessage(from, '⚠️ Error al generar el resumen.');
+          }
+          return res.sendStatus(200);
+        }
+
+        // RESUMEN DE CUENTA ESPECÍFICA O MES
+        if (msgLower.startsWith('resumen de ') || msgLower.startsWith('resumen ')) {
+          const accounts = await getUserAccounts(user.id);
+          const monthIndex = parseMonthFromText(messageBody);
+          const currentYear = new Date().getFullYear();
+          
+          let accountName = null;
+          
+          for (const acc of accounts) {
+            if (msgLower.includes(acc.name.toLowerCase())) {
+              accountName = acc.name;
+              break;
+            }
+          }
+
+          try {
+            if (accountName) {
+              const report = await getAccountMonthlyReport(user.id, accountName, monthIndex);
+              const message = formatAccountReport(report);
+              await sendWhatsAppMessage(from, message);
+            } else if (monthIndex !== null) {
+              const report = await getMonthlyReport(user.id, monthIndex, currentYear);
+              const message = formatGlobalReport(report);
+              
+              await sendWhatsAppButtons(from,
+                message + '\n\n¿Deseas un desglose por categoría?',
+                [
+                  { title: 'Sí, mostrar' },
+                  { title: 'No, gracias' }
+                ]
+              );
+
+              setConversationState(from, {
+                type: 'awaiting_category_breakdown',
+                report: report
+              });
+            } else {
+              await sendWhatsAppMessage(from, 
+                '⚠️ No entendí qué resumen necesitas.\n\n' +
+                'Ejemplos:\n' +
+                '• "Resumen mensual"\n' +
+                '• "Resumen de Efectivo"\n' +
+                '• "Resumen de enero"'
+              );
+            }
+          } catch (err) {
+            console.error('Error generando resumen:', err);
+            await sendWhatsAppMessage(from, '⚠️ Error al generar el resumen.');
+          }
+          return res.sendStatus(200);
+        }
+
         // DETECTAR INTENCIÓN
         const intention = await detectIntention(messageBody);
 
