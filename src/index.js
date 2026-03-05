@@ -949,6 +949,75 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
+// Ruta para enviar resúmenes mensuales automáticamente
+app.get('/cron/monthly-summary', async (req, res) => {
+  try {
+    // Seguridad: verificar token secreto
+    const cronSecret = req.query.secret;
+    if (cronSecret !== process.env.CRON_SECRET) {
+      return res.status(403).send('Forbidden');
+    }
+
+    console.log('📊 Iniciando envío de resúmenes mensuales...');
+
+    // Obtener todos los usuarios con WhatsApp
+    const usersSnapshot = await db.collection('users')
+      .where('whatsappNumber', '!=', null)
+      .get();
+
+    let successCount = 0;
+    let errorCount = 0;
+
+    // Enviar resumen a cada usuario
+    for (const userDoc of usersSnapshot.docs) {
+      const user = { id: userDoc.id, ...userDoc.data() };
+      
+      try {
+        const report = await getMonthlyReport(user.id);
+        
+        if (report && report.transactionCount > 0) {
+          const message = formatGlobalReport(report);
+          
+          await sendWhatsAppButtons(user.whatsappNumber,
+            message + '\n\n¿Deseas un desglose por categoría?',
+            [
+              { title: 'Sí, mostrar' },
+              { title: 'No, gracias' }
+            ]
+          );
+
+          setConversationState(user.whatsappNumber, {
+            type: 'awaiting_category_breakdown',
+            report: report
+          });
+
+          successCount++;
+          console.log(`✅ Resumen enviado a ${user.name}`);
+        } else {
+          console.log(`⏭️ ${user.name} no tiene transacciones este mes`);
+        }
+      } catch (err) {
+        console.error(`❌ Error enviando a ${user.name}:`, err.message);
+        errorCount++;
+      }
+
+      // Esperar 2 segundos entre envíos para no saturar WhatsApp
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+
+    res.status(200).json({
+      status: 'completed',
+      sent: successCount,
+      errors: errorCount,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error en cron de resumen mensual:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/', (req, res) => {
   res.json({
     status: 'FinanzApp Backend funcionando',
